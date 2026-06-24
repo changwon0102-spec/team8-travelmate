@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -33,12 +32,6 @@ DEFAULT_EXCHANGE_RATES: Dict[str, float] = {
 }
 
 SUPPORTED_CURRENCIES = set(DEFAULT_EXCHANGE_RATES)
-
-DEFAULT_EXCHANGE_API_URL = "https://api.exchangerate.host/latest"
-DEFAULT_BASE_CURRENCY = "KRW"
-DEFAULT_EXCHANGE_API_KEY_ENV = "EXCHANGE_API_KEY"
-DEFAULT_EXCHANGE_API_URL_ENV = "EXCHANGE_API_URL"
-
 
 def normalize_currency_code(currency: str) -> str:
     """통화 코드를 표준 형식으로 변환합니다."""
@@ -85,17 +78,17 @@ def get_dotenv_value(key: str, dotenv_path: Optional[str] = None) -> Optional[st
     return None
 
 
-def get_api_key_from_dotenv(
-    api_key_env: str = DEFAULT_EXCHANGE_API_KEY_ENV,
-    dotenv_path: Optional[str] = None,
-) -> Optional[str]:
+def get_required_dotenv_value(key: str, dotenv_path: Optional[str] = None) -> str:
+    """`.env`에서 필수 설정을 읽고, 값이 없으면 명확한 오류를 발생시킵니다."""
+    value = get_dotenv_value(key, dotenv_path=dotenv_path)
+    if value is None:
+        raise RuntimeError(f".env에서 {key}를 찾을 수 없습니다.")
+    return value
+
+
+def get_api_key_from_dotenv(dotenv_path: Optional[str] = None) -> Optional[str]:
     """`.env` 파일에서 API 키를 가져옵니다."""
-    return get_dotenv_value(api_key_env, dotenv_path=dotenv_path)
-
-
-DEFAULT_OPENAI_API_URL = "https://api.openai.com/v1/responses"
-DEFAULT_OPENAI_MODEL_ENV = "OPENAI_DEFAULT_MODEL"
-DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+    return get_dotenv_value("EXCHANGE_API_KEY", dotenv_path=dotenv_path)
 
 
 def get_openai_api_key(dotenv_path: Optional[str] = None) -> Optional[str]:
@@ -105,19 +98,20 @@ def get_openai_api_key(dotenv_path: Optional[str] = None) -> Optional[str]:
 
 def get_openai_model(dotenv_path: Optional[str] = None) -> str:
     """`.env` 파일에서 OpenAI 모델 이름을 가져옵니다."""
-    return get_dotenv_value(DEFAULT_OPENAI_MODEL_ENV, dotenv_path=dotenv_path) or DEFAULT_OPENAI_MODEL
+    return get_required_dotenv_value("OPENAI_DEFAULT_MODEL", dotenv_path=dotenv_path)
 
 
-def call_openai_api(prompt: str, model: Optional[str] = None, dotenv_path: Optional[str] = None) -> str:
+def call_openai_api(prompt: str, dotenv_path: Optional[str] = None) -> str:
     """OpenAI Responses API를 호출하고 텍스트 응답을 반환합니다."""
     api_key = get_openai_api_key(dotenv_path=dotenv_path)
     if not api_key:
         raise RuntimeError(".env에서 OPENAI_API_KEY를 찾을 수 없습니다.")
 
-    model = model or get_openai_model(dotenv_path=dotenv_path)
+    model = get_openai_model(dotenv_path=dotenv_path)
+    api_url = get_required_dotenv_value("OPENAI_API_URL", dotenv_path=dotenv_path)
     body = json.dumps({"model": model, "input": prompt}).encode("utf-8")
     request = urllib.request.Request(
-        DEFAULT_OPENAI_API_URL,
+        api_url,
         data=body,
         headers={
             "Content-Type": "application/json",
@@ -184,7 +178,6 @@ def extract_rate_from_openai_text(text: str) -> float:
 def fetch_hana_bank_rate_via_openai(
     from_currency: str = "USD",
     to_currency: str = "KRW",
-    model: Optional[str] = None,
     dotenv_path: Optional[str] = None,
 ) -> float:
     """OpenAI API를 통해 하나은행 매매기준율을 조회합니다."""
@@ -193,7 +186,7 @@ def fetch_hana_bank_rate_via_openai(
         "결과는 다음 형식으로만 작성하십시오: {\"rate\": 숫자, \"currency_pair\": \"USD/KRW\", \"source\": \"하나은행\"}. "
         "실시간 조회가 불가능하면 error 필드를 포함한 JSON을 반환하세요."
     )
-    response_text = call_openai_api(prompt, model=model, dotenv_path=dotenv_path)
+    response_text = call_openai_api(prompt, dotenv_path=dotenv_path)
     return extract_rate_from_openai_text(response_text)
 
 
@@ -201,7 +194,6 @@ def convert_currency_using_hana_bank(
     amount: float,
     from_currency: str,
     to_currency: str,
-    model: Optional[str] = None,
     dotenv_path: Optional[str] = None,
 ) -> float:
     """하나은행 매매기준율로 통화를 변환합니다. 현재는 USD/KRW만 지원합니다."""
@@ -211,16 +203,20 @@ def convert_currency_using_hana_bank(
     if {from_code, to_code} != {"USD", "KRW"}:
         raise ValueError("현재 하나은행 환율 변환은 USD/KRW 간 변환만 지원합니다.")
 
-    rate = fetch_hana_bank_rate_via_openai(from_currency=from_currency, to_currency=to_currency, model=model, dotenv_path=dotenv_path)
+    rate = fetch_hana_bank_rate_via_openai(
+        from_currency=from_currency,
+        to_currency=to_currency,
+        dotenv_path=dotenv_path,
+    )
     if from_code == "USD" and to_code == "KRW":
         return amount * rate
     return amount / rate
 
 
 def fetch_exchange_rates_from_api(
-    base_currency: str = DEFAULT_BASE_CURRENCY,
+    base_currency: str,
+    api_url: str,
     symbols: Optional[str] = None,
-    api_url: str = DEFAULT_EXCHANGE_API_URL,
     api_key: Optional[str] = None,
 ) -> Dict[str, float]:
     """외부 API에서 환율 데이터를 가져옵니다."""
@@ -257,17 +253,19 @@ def fetch_exchange_rates_from_api(
 
 
 def get_exchange_rates(
-    base_currency: str = DEFAULT_BASE_CURRENCY,
+    base_currency: Optional[str] = None,
     symbols: Optional[str] = None,
     use_api: bool = True,
-    api_url: Optional[str] = None,
-    api_key_env: str = DEFAULT_EXCHANGE_API_KEY_ENV,
     dotenv_path: Optional[str] = None,
 ) -> Dict[str, float]:
     """환율 데이터를 반환합니다. API 요청 실패 시 기본 데이터를 대체로 사용합니다."""
     if use_api:
-        api_url = api_url or os.getenv(DEFAULT_EXCHANGE_API_URL_ENV, DEFAULT_EXCHANGE_API_URL)
-        api_key = get_api_key_from_dotenv(api_key_env=api_key_env, dotenv_path=dotenv_path)
+        base_currency = base_currency or get_required_dotenv_value(
+            "EXCHANGE_BASE_CURRENCY",
+            dotenv_path=dotenv_path,
+        )
+        api_url = get_required_dotenv_value("EXCHANGE_API_URL", dotenv_path=dotenv_path)
+        api_key = get_api_key_from_dotenv(dotenv_path=dotenv_path)
         try:
             rates = fetch_exchange_rates_from_api(
                 base_currency=base_currency,
@@ -407,7 +405,6 @@ def sample_expense_summary() -> str:
 
 
 if __name__ == "__main__":
-    load_dotenv()
     print("[TravelMate 환율 / 경비 계산 도구 샘플]")
     print(sample_currency_conversion(use_api=True, dotenv_path=".env"))
     print(sample_expense_summary())
