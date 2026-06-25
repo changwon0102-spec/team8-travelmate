@@ -153,3 +153,9 @@ def weather_tool(user_input):
 # 기존 app.py나 예전 코드에서 쓰던 함수명과도 연결해 둡니다.
 def answer_weather_question(user_input):
     return weather_tool(user_input)
+
+
+
+
+if __name__ == "__main__":
+    print(weather_tool("다낭 날씨 알려줘"))
